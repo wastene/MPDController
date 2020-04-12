@@ -8,27 +8,75 @@
 #include <list>
 #include <iostream>
 
+#include <chrono>
+// #include <pthread.h>
+
 using namespace std;
 
-#define TICK 10000 // 10 ms
-#define DISPLAYVOLUMETICKS 300
+#define SECONDWITHOUTTICKS 1000000
+
+#define COUNTOFTICKSFORONESECOND 100    // 1 ms (before 10ms = 100)
+#define TICK SECONDWITHOUTTICKS/COUNTOFTICKSFORONESECOND 
+#define ONESECOND COUNTOFTICKSFORONESECOND
+#define HUNDREDMS ONESECOND/10
+
+#define DURATIONOFDISPLAYVOLUME 3*ONESECOND
+#define ROTARYENCODERTICKSTOLASTCHANGE 5*HUNDREDMS  // 200ms - (If new Change within this time interval occur, 
+                                                    //the last change of the rotary encoder should be taken)
+#define BUTTONPOLLINGTIMEINTERVAL 2*HUNDREDMS // 200ms - Check new state after this time interval
+
+#define MPDPARSINGINTERVAL HUNDREDMS
+
+#define STATE_VOLUME 1
+#define STATE_TIME 2
 
 #define DEBUG
 
+typedef struct MPDInfo_Struct {
+    string title = "";
+    int volume = 0;
+    int time = 0;
+    bool state = false;
+} MPDInfo;
+
+typedef struct Settings_Struct {
+    int volumeRemainingTicks = 0;
+    int oneSecondRemainingTicks = ONESECOND; // 100 Ticks = 1 Second
+    int lastStateOfLineOne = 0; // 0 Nothing, 1 Volume, 2 Time
+    int elapsedTicksSinceRotaryEncoderChange = 0;
+    int lastChangeOfRotaryEncoder = 0; // 0 Nothing, -1 Down, 1 Up
+} Settings;
+
 string timeToString(int time);
+void sendCommandWithIdle(MPD *mpd, const char* command);
+void sendCommand(MPD *mpd, const char* command);
+void updateState(MPDInfo*, LCD*, Settings*);
+void parseMPDData(MPD* mpd, LCD* lcd, MPDInfo* mpdInfo, Settings* settings);
+void checkingRotaryEncoder(RotaryEncoder* rotaryEncoder, MPD* mpd, LCD* lcd, MPDInfo* mpdInfo, Settings* settings);
+void checkingButton(Button* button, int* lastChangeTicks, MPD* mpd, const char* command);
+
+void* oneSecondFunction();
 
 int main()
 {
     // Initialization
     int ticks = 0; // Needed for knowing how many milliseconds are gone
+    int oneSecondTicks = 0;
+    int mpdParsingTicks = MPDPARSINGINTERVAL;
 
     LCD lcd = LCD(0x27);
+    if(lcd.off() < 0){
+        cerr << "Cannot speak to LCD Display." << endl;
+        lcd.reinit();
+    }
 
     Input inPrev = Input(26);
     Input inNext = Input(16);
     Input inPlay = Input(13);
     Input inPause = Input(19);
 
+    // Need to call Buttons with Input-Objects, otherwise its not working, 
+    // if you initialize these Buttons with the Pin-Constructor
     Button prev = Button(&inPrev);
     Button next = Button(&inNext);
     Button play = Button(&inPlay);
@@ -41,258 +89,168 @@ int main()
 
     Button clk = Button(20);
     Button dt = Button(21);
-
     RotaryEncoder rotaryEncoder = RotaryEncoder(&clk, &dt);
 
-    int volume = 0;
-    string title = "";
-    int time = 0;
-    bool state = false; // False=Off / True=On
+    MPDInfo mpdInfo;
+    mpdInfo.volume = 0;
+    mpdInfo.title = "";
+    mpdInfo.time = 0;
+    mpdInfo.state = false;
 
-    int volumeRemainingTicks = 0;
-    int oneSecondRemainingTicks = 100; // 100 Ticks = 1 Second
-    int lastStateOfLineOne = 0; // 0 Nothing, 1 Volume, 2 Time
+    Settings settings;
+    settings.volumeRemainingTicks = 0;
+    settings.oneSecondRemainingTicks = ONESECOND;
+    settings.lastStateOfLineOne = 0;
+    settings.elapsedTicksSinceRotaryEncoderChange = 0;
+    settings.lastChangeOfRotaryEncoder = 0;
 
-    int buttonCheckTicks = 0;
+    // MPD mpd = MPD();
+    // sendCommand(&mpd, "password \"MPDPlayerIsCool\"\n");
+    // sendCommand(&mpd, "status\ncurrentsong\nidle\n");
+    MPD mpd = MPD("127.0.0.1", 6600, "MPDPlayerIsCool");
 
-    MPD mpd = MPD();
+    long long lastTime = chrono::duration_cast<chrono::milliseconds>(chrono::system_clock::now().time_since_epoch()).count();
 
-    mpd.sendCommand("status\ncurrentsong\nidle\n");
+    
+    // pthread_t *thread;
+    // pthread_create(thread, NULL, oneSecondFunction, NULL);
+
+    // int pthread_create( pthread_t *thread, 
+    //                 const pthread_attr_t *attribute,
+    //                 void *(*funktion)(void *),
+    //                 void *argumente );
 
     // Do Stuff
     while(1)
     {
-        if(volumeRemainingTicks > 0)
+        if(oneSecondTicks >= ONESECOND)
         {
-            volumeRemainingTicks--;
-        }else if(volumeRemainingTicks == 1)
-        {
-            lcd.clear(1);
-            lastStateOfLineOne = 1;
+            oneSecondTicks = 0;
+            long long ms = chrono::duration_cast<chrono::milliseconds>(chrono::system_clock::now().time_since_epoch()).count();
+            // cout << "Time: " << ms-lastTime << endl;
+            lastTime = ms;
         }
 
-        if(oneSecondRemainingTicks > 0)
+
+        if(settings.volumeRemainingTicks > 0)
         {
-            oneSecondRemainingTicks--;
+            settings.volumeRemainingTicks--;
+        }
+        else if(settings.volumeRemainingTicks == 1) // TODO: Are these condition even called?
+        {
+            if(lcd.clear(1) < 0){
+                cerr << "Cannot speak to LCD Display." << endl;
+                lcd.reinit();
+            }
+            settings.lastStateOfLineOne = STATE_VOLUME;
+        }
+
+        if(settings.oneSecondRemainingTicks > 0)
+        {
+            settings.oneSecondRemainingTicks--;
         }
         else
         {
-            oneSecondRemainingTicks = 100;
+            settings.oneSecondRemainingTicks = ONESECOND;
 
-            if(volumeRemainingTicks <= 0)
+            if(settings.volumeRemainingTicks <= 0)
             {
-                if(lastStateOfLineOne == 1)
+                if(settings.lastStateOfLineOne == 1)
                 {
-                    lcd.clear(1);
+                    if(lcd.clear(1) < 0){
+                        cerr << "Cannot speak to LCD Display." << endl;
+                        lcd.reinit();
+                    }
                 }
 
-                time++;
-                string timeString = timeToString(time);
-                lcd.centralWrite(timeString.c_str(), timeString.length(), 1);
+                mpdInfo.time++;
+                string timeString = timeToString(mpdInfo.time);
+                if(lcd.centralWrite(timeString.c_str(), timeString.length(), 1) < 0){
+                    cerr << "Cannot speak to LCD Display." << endl;
+                    lcd.reinit();
+                }
 
-                lastStateOfLineOne = 2;
+                settings.lastStateOfLineOne = STATE_TIME;
             }
         }
-
-
-        // Check if Data is available
-        string data = mpd.receive();
-        if(data.length() > 0)
+        /**
+         * Receiving Data from MPD-Server
+         * 
+         **/
+        if(mpdParsingTicks == 0)
         {
-#ifdef DEBUG            
-            cout << "Data: " << data << endl; 
-#endif
-            list<KeyValue> response = MPD::convertKeyValues(data);
-            for(list<KeyValue>::iterator iter = response.begin(); iter != response.end(); iter++)
-            {
-                if(iter->key == "Title")
-                {
-                    // Write Title to LCD
-                    title = iter->value;
-                    lcd.writeLine(title.c_str(), 0);
-#ifdef DEBUG                    
-                    cout << "Title: " << title << endl;
-#endif
-                    // TODO: Need Scrolling?
-                }
-                else if(iter->key == "time")
-                {
-                    // Format of time: s:ms
-                    int pos = iter->value.find(":");
-                    string seconds = iter->value.substr(0, pos);
-                    time = stoi(seconds);
-
-                    if(volumeRemainingTicks <= 0)
-                    {
-                        string timeString = timeToString(time);
-                        lcd.clear(1);
-                        lcd.centralWrite(timeString.c_str(), timeString.length(), 1);
-
-                        lastStateOfLineOne = 2;
-#ifdef DEBUG
-                        cout << "Time: " << timeString << endl;
-#endif                    
-                    }
-
-                    oneSecondRemainingTicks = 100;
-                }
-                else if(iter->key == "volume")
-                {
-                    // Write Volume to LCD and rewrite Volume after 2 Seconds again with Time
-                    int recvVolume = stoi(iter->value);
-                    if(volume != recvVolume)
-                    {
-                        volume = recvVolume;
-
-                        string volumeString = "Volume: "+ iter->value + "%";
-
-                        volumeRemainingTicks = DISPLAYVOLUMETICKS; // 2 Seconds (1 TICK = 10MS)
-                        lcd.centralWrite(volumeString.c_str(), volumeString.length(), 1);
-#ifdef DEBUG
-                        cout << "Volume: " << iter->value << endl;
-#endif
-                        lastStateOfLineOne = 1;
-                    }
-                }
-                else if(iter->key == "state")
-                {
-                    // Turn LCD on or off
-                    if(iter->value == "play")
-                    {
-                        if(state == false)
-                        {
-                            state = true;
-                            lcd.reinit();
-                            lcd.on();
-                        }          
-                    }
-                    else 
-                    {
-                        if(state)
-                        {
-                            state = false;
-                            lcd.off();
-                        }
-                    }
-#ifdef DEBUG
-                    cout << "State: " << iter->value << endl;
-#endif                
-                }
-                else if(iter->key == "changed")
-                {
-                    if(iter->value == "mixer")
-                    {
-                        // Volume (check for status)
-                        mpd.sendCommand("noidle\nstatus\nidle\n");
-                    }
-                    else if(iter->value == "player")
-                    {
-                        // State or Time changed (check for status and currentsong)
-                        mpd.sendCommand("noidle\nstatus\ncurrentsong\nidle\n");
-                    }
-#ifdef DEBUG                    
-                    cout << "Changed: " << iter->value << endl;
-#endif
-                }
-            }
+            parseMPDData(&mpd, &lcd, &mpdInfo, &settings);
+            mpdParsingTicks = MPDPARSINGINTERVAL;
         }
 
-        // Check Rotary Encoder
-        int rotaryEncoderStatus = rotaryEncoder.check();
-        if(rotaryEncoderStatus != 0)
-        {    
-            if(rotaryEncoderStatus == -1 && volume > 0)
-            {
-                volume--;
-            }
-            else if(rotaryEncoderStatus == 1 && volume < 100)
-            {
-                volume++;
-            }
+        /**
+         * Checking Rotary Encoder (for Volume)
+         **/
+        checkingRotaryEncoder(&rotaryEncoder, &mpd, &lcd, &mpdInfo, &settings);
 
-            string cmd = "noidle\nsetvol "+to_string(volume)+"\nidle\n";
-            mpd.sendCommand(cmd.c_str());
-
-            volumeRemainingTicks = DISPLAYVOLUMETICKS;
-
-            string volumeString = "Volume: "+ to_string(volume) + "%";
-            lcd.centralWrite(volumeString.c_str(), volumeString.length(), 1);
-
-            lastStateOfLineOne = 1;
-        }
+        /**
+         * Check Button States (Play, Pause, Prev, Next)
+         * 
+         **/
+        checkingButton(&play, &playLastChangeTicks, &mpd, "play\n");
+        checkingButton(&pause, &pauseLastChangeTicks, &mpd, "pause 1\n"); 
+        checkingButton(&prev, &prevLastChangeTicks, &mpd, "previous\n");
+        checkingButton(&next, &nextLastChangeTicks, &mpd, "next\n");
 
 
-        int prevEventState = prev.getEvent();
-        if(prevEventState == EVENT_UP)
+        if(settings.elapsedTicksSinceRotaryEncoderChange <= ROTARYENCODERTICKSTOLASTCHANGE)
         {
-            prevLastChangeTicks = 0;
+            settings.elapsedTicksSinceRotaryEncoderChange++;
         }
-        else if(prevEventState == EVENT_DOWN && prevLastChangeTicks >= 10)
-        {
-#ifdef DEBUG
-            cout << "Prev" << endl;
-#endif
-            mpd.sendCommand("noidle\nprevious\nidle\n");
-            prevLastChangeTicks = -1;
-        }
-        else if(prevEventState != EVENT_DOWN && prevLastChangeTicks >= 0){
-            prevLastChangeTicks++;
-        }  
 
-        int nextEventState = next.getEvent();
-        if(nextEventState == EVENT_UP)
-        {
-            nextLastChangeTicks = 0;
-        }
-        else if(nextEventState == EVENT_DOWN && nextLastChangeTicks >= 10)
-        {
-#ifdef DEBUG
-            cout << "Next" << endl;
-#endif
-            mpd.sendCommand("noidle\nnext\nidle\n");
-            nextLastChangeTicks = -1;
-        }
-        else if(nextEventState != EVENT_DOWN && nextLastChangeTicks >= 0){
-            nextLastChangeTicks++;
-        }  
-
-        int playEventState = play.getEvent();
-        if(playEventState == EVENT_UP)
-        {
-            playLastChangeTicks = 0;
-        }
-        else if(playEventState == EVENT_DOWN && playLastChangeTicks >= 10)
-        {
-#ifdef DEBUG
-            cout << "Play" << endl;
-#endif
-            mpd.sendCommand("noidle\nplay\nidle\n");
-            playLastChangeTicks = -1;
-        }
-        else if(playEventState != EVENT_DOWN && playLastChangeTicks >= 0){
-            playLastChangeTicks++;
-        }  
-
-        int pauseEventState = pause.getEvent();
-        if(pauseEventState == EVENT_UP)
-        {
-            pauseLastChangeTicks = 0;
-        }
-        else if(pauseEventState == EVENT_DOWN && pauseLastChangeTicks >= 10)
-        {
-#ifdef DEBUG
-            cout << "Pause" << endl;
-#endif
-            mpd.sendCommand("noidle\npause 1\nidle\n");
-            pauseLastChangeTicks = -1;
-        }
-        else if(pauseEventState != EVENT_DOWN && pauseLastChangeTicks >= 0){
-            pauseLastChangeTicks++;
-        }  
-
-        usleep(TICK); // Sleep 10ms
+        ticks++;
+        oneSecondTicks++;
+        mpdParsingTicks--;
+        usleep(TICK); // Sleep
     }
 
+}
+
+void updateState(MPDInfo *mpdInfo, LCD *lcd, Settings *settings)
+{
+    if(mpdInfo->state) // Play
+    {
+        // Title
+        if(lcd->centralWrite(mpdInfo->title.c_str(), mpdInfo->title.length(), 0) < 0){
+            cerr << "Cannot speak to LCD Display." << endl;
+            lcd->reinit();
+        }
+        #ifdef DEBUG
+        cout << "Write Title: " << mpdInfo->title << endl;
+        #endif
+
+        // Time
+        if(settings->volumeRemainingTicks <= 0)
+        {
+            string timeString = timeToString(mpdInfo->time);
+            if(lcd->clear(1) < 0){
+                cerr << "Cannot speak to LCD Display." << endl;
+                lcd->reinit();
+            }
+            if(lcd->centralWrite(timeString.c_str(), timeString.length(), 1) < 0){
+                cerr << "Cannot speak to LCD Display." << endl;
+                lcd->reinit();
+            }
+            //lcd->writeLine(mpdInfo->title.c_str(), 0);
+            
+
+            settings->lastStateOfLineOne = STATE_TIME;
+
+            #ifdef DEBUG
+            cout << "Write Time: " << timeString << endl;
+            #endif                    
+        }
+        settings->oneSecondRemainingTicks = ONESECOND;
+    }
+    else // Pause / Stop
+    {
+
+    }
 }
 
 string timeToString(int time)
@@ -310,4 +268,244 @@ string timeToString(int time)
         str += to_string(seconds);
     }
     return str;
+}
+
+void sendCommand(MPD* mpd, const char* command)
+{
+    int sendedBytes = mpd->sendCommand(command);
+    if(sendedBytes < 0){
+        cout << "Failed to send Command. Try to reconnect to MPD. " << endl;
+        mpd->connect();
+        mpd->sendCommand("password \"MPDPlayerIsCool\"\nstatus\ncurrentsong\nidle\n");
+    }
+    //cout << "Sended " << sendedBytes << " Bytes" << " from " << string(command).length() << endl; 
+}
+
+void sendCommandWithIdle(MPD *mpd, const char* command)
+{
+    sendCommand(mpd, "noidle\n");
+    sendCommand(mpd, command);
+    sendCommand(mpd, "idle\n");
+}
+
+void parseMPDData(MPD* mpd, LCD* lcd, MPDInfo* mpdInfo, Settings *settings)
+{
+    list<KeyValue> response = mpd->receiveCommand();
+    if(response.size() > 0)
+    {
+        for(list<KeyValue>::iterator iter = response.begin(); iter != response.end(); iter++)
+        {
+            cout << "Key: " << iter->key << " Value: " << iter->value << endl;
+            if(iter->key == "Title")
+            {
+                // Write Title to LCD
+                mpdInfo->title = iter->value;
+                if(mpdInfo->state)
+                {
+                    if(lcd->writeLine(mpdInfo->title.c_str(), 0) < 0){
+                        cerr << "Cannot speak to LCD Display." << endl;
+                        lcd->reinit();
+                    }
+                }
+                #ifdef DEBUG
+                cout << "Received Title: " << mpdInfo->title << endl;
+                #endif 
+                // TODO: Need Scrolling?
+            }
+            else if(iter->key == "time")
+            {
+                // Format of time: s:ms
+                int pos = iter->value.find(":");
+                string seconds = iter->value.substr(0, pos);
+                mpdInfo->time = stoi(seconds);
+
+                if(mpdInfo->state && settings->volumeRemainingTicks <= 0)
+                {
+                    string timeString = timeToString(mpdInfo->time);
+                    
+                    if(lcd->clear(1) < 0){
+                        cerr << "Cannot speak to LCD Display." << endl;
+                        lcd->reinit();
+                    }
+                    if(lcd->centralWrite(timeString.c_str(), timeString.length(), 1) < 0){
+                        cerr << "Cannot speak to LCD Display." << endl;
+                        lcd->reinit();
+                    }
+                    settings->lastStateOfLineOne = STATE_TIME;
+                    
+                    #ifdef DEBUG
+                    cout << "Time: " << timeString << endl;
+                    #endif                    
+                }
+                settings->oneSecondRemainingTicks = ONESECOND;
+            }
+            else if(iter->key == "volume")
+            {
+                // Write Volume to LCD and rewrite Volume after 2 Seconds again with Time
+                int recvVolume = stoi(iter->value);
+                if(mpdInfo->volume != recvVolume)
+                {
+                    mpdInfo->volume = recvVolume;
+
+                    if(mpdInfo->state){
+                        string volumeString = "Volume: "+ iter->value + "%";
+
+                        settings->volumeRemainingTicks = DURATIONOFDISPLAYVOLUME;
+                        if(lcd->centralWrite(volumeString.c_str(), volumeString.length(), 1) < 0){
+                            cerr << "Cannot speak to LCD Display." << endl;
+                            lcd->reinit();
+                        }
+
+                        #ifdef DEBUG
+                        cout << "Volume: " << iter->value << endl;
+                        #endif
+
+                        settings->lastStateOfLineOne = STATE_VOLUME;
+                    }
+                }
+            }
+            else if(iter->key == "state")
+            {
+                // Turn LCD on or off
+                if(iter->value == "play")
+                {
+                    if(mpdInfo->state == false)
+                    {
+                        mpdInfo->state = true;
+                        lcd->reinit();
+                        if(lcd->on() < 0){
+                            cerr << "Cannot speak to LCD Display." << endl;
+                            lcd->reinit();
+                        }
+
+                        updateState(mpdInfo, lcd, settings);
+                    }          
+                }
+                else 
+                {
+                    if(mpdInfo->state)
+                    {
+                        mpdInfo->state = false;
+                        if(lcd->off() < 0){
+                            cerr << "Cannot speak to LCD Display." << endl;
+                            lcd->reinit();
+                        }
+
+                        updateState(mpdInfo, lcd, settings);
+                    }
+                }
+
+                #ifdef DEBUG
+                cout << "State: " << iter->value << endl;
+                #endif                
+            }
+            else if(iter->key == "changed")
+            {
+                if(iter->value == "mixer")
+                {
+                    // Volume (check for status)
+                    sendCommandWithIdle(mpd, "status\n");
+                }
+                else if(iter->value == "player")
+                {
+                    // State or Time changed (check for status and currentsong)
+                    sendCommandWithIdle(mpd, "status\ncurrentsong\n");
+                }
+
+                #ifdef DEBUG                    
+                cout << "Changed: " << iter->value << endl;
+                #endif
+            }
+        }
+    }
+}
+
+void checkingRotaryEncoder(RotaryEncoder *rotaryEncoder, MPD* mpd, LCD* lcd, MPDInfo* mpdInfo, Settings* settings)
+{
+    int rotaryEncoderStatus = rotaryEncoder->check();
+    if(rotaryEncoderStatus != 0)
+    {    
+        cout << "ElapsedTicksSinceLastRotaryEncoder Change: " << settings->elapsedTicksSinceRotaryEncoderChange 
+            << " Last Change: " << settings->lastChangeOfRotaryEncoder << endl;
+
+        if(settings->elapsedTicksSinceRotaryEncoderChange > ROTARYENCODERTICKSTOLASTCHANGE)
+        { // 200ms
+            settings->lastChangeOfRotaryEncoder = 0;
+        }
+        settings->elapsedTicksSinceRotaryEncoderChange = 0;
+
+        if(settings->lastChangeOfRotaryEncoder != 0)
+        {
+            if(settings->lastChangeOfRotaryEncoder == -1)
+            {
+                if(mpdInfo->volume > 0)
+                {
+                    mpdInfo->volume--;
+                    cout << "Reduced Volume (with Last Change)" << endl;
+                }
+            }else if(settings->lastChangeOfRotaryEncoder == 1)
+            {
+                if(mpdInfo->volume < 100)
+                {
+                    mpdInfo->volume++;
+                    cout << "Increased Volume (with Last Change)" << endl;
+                }
+            }
+        }
+        else 
+        {
+            if(rotaryEncoderStatus == -1 && mpdInfo->volume > 0)
+            {
+                mpdInfo->volume--;
+                settings->lastChangeOfRotaryEncoder = -1;
+                cout << "Reduced Volume" << endl;
+            }
+            else if(rotaryEncoderStatus == 1 && mpdInfo->volume < 100)
+            {
+                mpdInfo->volume++;
+                settings->lastChangeOfRotaryEncoder = 1;
+                cout << "Increased Volume " << endl;
+            }
+        }
+
+        string cmd = "setvol "+to_string(mpdInfo->volume)+"\n";
+        sendCommandWithIdle(mpd, cmd.c_str());
+
+        settings->volumeRemainingTicks = DURATIONOFDISPLAYVOLUME;
+
+        string volumeString = "Volume: "+ to_string(mpdInfo->volume) + "%";
+
+        if(lcd->centralWrite(volumeString.c_str(), volumeString.length(), 1) < 0){
+            cerr << "Cannot speak to LCD Display." << endl;
+            lcd->reinit();
+        }
+
+        settings->lastStateOfLineOne = STATE_VOLUME;
+    }
+}
+
+void checkingButton(Button* button, int* lastChangeTicks, MPD* mpd, const char* command)
+{
+    int prevEventState = button->getEvent();
+    if(prevEventState == EVENT_UP)
+    {
+        (*lastChangeTicks) = 0;
+    }
+    else if(prevEventState == EVENT_DOWN && (*lastChangeTicks) >= BUTTONPOLLINGTIMEINTERVAL)
+    {
+        #ifdef DEBUG
+        cout << "Prev" << endl;
+        #endif
+
+        sendCommandWithIdle(mpd, command);
+        (*lastChangeTicks) = -1;
+    }
+    else if(prevEventState != EVENT_DOWN && (*lastChangeTicks) >= 0){
+        (*lastChangeTicks)++;
+    }
+}
+
+void* oneSecondFunction()
+{
+
 }

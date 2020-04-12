@@ -4,125 +4,161 @@
 #include <signal.h>
 #include <unistd.h>
 
-LCD::LCD(unsigned int addr)
+int safeI2CWrite(I2C *dev, unsigned char data, LCD *lcd);
+
+LCD::LCD(unsigned int addr) 
 {
     this->addr = addr;
     dev = I2C("/dev/i2c-1", addr);
     init();
 }
 
-LCD::LCD(unsigned int addr, unsigned int baudrate)
+LCD::LCD(unsigned int addr, unsigned int baudrate) 
 {
     this->addr = addr;
     dev = I2C("/dev/i2c-1", addr);
     init();
 }
 
-void LCD::init()
+int LCD::init() 
 {
-    write4Bits(0x03 << 4);
+    if(write4Bits(0x03 << 4) < 0){ return -1; }
     usleep(4500);
-    write4Bits(0x03 << 4);
+    if(write4Bits(0x03 << 4) < 0){ return -1; }
     usleep(4500);
-    write4Bits(0x03 << 4);
+    if(write4Bits(0x03 << 4) < 0){ return -1; }
     usleep(150);
 
-    write4Bits(0x02  << 4);
+    if(write4Bits(0x02 << 4) < 0){ return -1; }
 
-    write(0x28, CMD);
-    write(0x0c, CMD);
-    clear();
-    write(0x06, CMD);
-    write(0x02, CMD);
+    if(write(0x28, CMD) < 0){ return -1; }
+    if(write(0x0c, CMD) < 0){ return -1; }
+    if(clear() < 0){ return -1; }
+    if(write(0x06, CMD) < 0){ return -1; }
+    if(write(0x02, CMD) < 0){ return -1; }
     usleep(2000);
+
+    return 0;
 }
 
-void LCD::reinit()
+int LCD::reinit() 
 {
+    dev.close();
     dev.open("/dev/i2c-1", this->addr);
-    init();
+    return init();
 }
 
-void LCD::write(unsigned char data, int mode)
+int LCD::write(unsigned char data, int mode) 
 {
-    write4Bits(mode | data & 0xF0);
-    write4Bits(mode | (data << 4) & 0xF0);
+    if(write4Bits(mode | data & 0xF0) < 0){
+        return -1;
+    }
+    if(write4Bits(mode | (data << 4) & 0xF0) < 0){
+        return -1;
+    }
+    return 0;
 }
 
-void LCD::write4Bits(unsigned char data)
+int LCD::write4Bits(unsigned char data) 
 {
-    dev.write(data | ports.BACKLIGHT);
-    dev.write(data | ports.E | ports.BACKLIGHT);
+    if(safeI2CWrite(&dev, data | ports.BACKLIGHT, this) < 0){
+        return -1;
+    }
+
+    if(safeI2CWrite(&dev, data | ports.E | ports.BACKLIGHT, this) < 0){
+        return -1;
+    }
     usleep(1);
-    dev.write((data & ~ports.E) | ports.BACKLIGHT);
+    if(safeI2CWrite(&dev, (data & ~ports.E) | ports.BACKLIGHT, this) < 0){
+        return -1;
+    }
     usleep(50);
+    return 0;
 }
 
-void LCD::on()
+int safeI2CWrite(I2C *dev, unsigned char data, LCD *lcd)
+{
+    if(dev->write(data) < 0){
+        lcd->reinit();
+        return dev->write(data);
+    }
+    return 0;
+}
+
+int LCD::on() 
 {
     ports.BACKLIGHT = (unsigned char)0x08;
-    write(0x0C, CMD);
+    return write(0x0C, CMD);
 }
 
-void LCD::off()
+int LCD::off() 
 {
     ports.BACKLIGHT = 0x00;
-    write(CMD_DISPLAYCONTROL | CMD_DISPLAYOFF, CMD);
+    return write(CMD_DISPLAYCONTROL | CMD_DISPLAYOFF, CMD);
 }
 
-void LCD::clear()
+int LCD::clear() 
 {
-    write(CMD_CLEAR, CMD);
+    if(write(CMD_CLEAR, CMD) < 0){ return -1; }
     usleep(2000);
+    return 0;
 }
 
-void LCD::clear(unsigned char line)
+int LCD::clear(unsigned char line) 
 {
-    write(LINES[line], CMD);
-    for(int i=0; i<16; i++){
+    if(write(LINES[line], CMD) < 0){ return -1; }
+    for (int i = 0; i < 16; i++)
+    {
         // 0x20 => Space
-        write(0x20, CHR);
+        if(write(0x20, CHR) < 0){ return -1; }
     }
+    return 0;
 }
 
-void LCD::write(unsigned char position, const char* text, unsigned char line)
+int LCD::write(unsigned char position, const char *text, unsigned char line) 
 {
-    write(LINES[line]+position, CMD);
-    for(int i=0; i<16-position; i++){
-        if(text[i] == '\0'){
+    if(write(LINES[line] + position, CMD) < 0){ return -1; }
+    for (int i = 0; i < 16 - position; i++)
+    {
+        if (text[i] == '\0')
+        {
             break;
         }
-        write(text[i], CHR);
+        if(write(text[i], CHR) < 0){ return -1; }
     }
+    return 0;
 }
 
-void LCD::writeLine(const char* text, unsigned char line)
+int LCD::writeLine(const char *text, unsigned char line) 
 {
-    write(LINES[line], CMD);
+    if(write(LINES[line], CMD) < 0){ return -1; }
 
     int i = 0;
-    for(i=0; i<16; i++){
-        if(text[i] == '\0'){
+    for (i = 0; i < 16; i++)
+    {
+        if (text[i] == '\0')
+        {
             break;
         }
-        write(text[i], CHR);
+        if(write(text[i], CHR) < 0){ return -1; }
     }
-    for(;i<16; i++){
-        write(0x20, CHR);
+    for (; i < 16; i++)
+    {
+        if(write(0x20, CHR) < 0){ return -1; }
     }
+    return 0;
 }
 
-void LCD::centralWrite(const char* text, unsigned char length, unsigned char line)
+int LCD::centralWrite(const char *text, unsigned char length, unsigned char line) 
 {
-    write((unsigned char)((16-length)/2), text, line);
+    return write((unsigned char)((16 - length) / 2), text, line);
 }
 
 void callback(int signum)
 {
-    
 }
 
-void LCD::scrollBegin(const char* text, unsigned char line)
+void LCD::scrollBegin(const char *text, unsigned char line)
 {
     // Initialization
     scroll[line].activated = true;
@@ -141,47 +177,47 @@ void LCD::scrollBegin(const char* text, unsigned char line)
 
 void LCD::scrollCallback()
 {
-    for(int i=0; i<2; i++)
+    for (int i = 0; i < 2; i++)
     {
-        if(scroll[i].activated)
+        if (scroll[i].activated)
         {
-            if(scroll[i].position >= 15)
+            if (scroll[i].position >= 15)
             {
                 scroll[i].position = 0;
             }
             else
-            { 
+            {
                 scroll[i].position++;
             }
 
             char text[16];
-            char* movedPointer = scroll[i].text+scroll[i].position;
+            char *movedPointer = scroll[i].text + scroll[i].position;
             strncpy(text, movedPointer, 16);
 
             int begin = -1;
-            for(int j=0; j<16; j++)
+            for (int j = 0; j < 16; j++)
             {
-                if(text[j] == '\0' && begin == -1)
+                if (text[j] == '\0' && begin == -1)
                 {
                     begin = j;
                     text[j] == 0x20;
                 }
-                else if(text[j] == '\0' && begin >= 0)
+                else if (text[j] == '\0' && begin >= 0)
                 {
-                    if(j-begin == 0)
+                    if (j - begin == 0)
                     {
                         // Insert ' *** ' between end of text and beginning
                         text[j] = ' ';
-                        text[j+1] = '*';
-                        text[j+2] = '*';
-                        text[j+3] = '*';
-                        text[j+4] = ' ';
+                        text[j + 1] = '*';
+                        text[j + 2] = '*';
+                        text[j + 3] = '*';
+                        text[j + 4] = ' ';
                     }
 
-                    if(j-begin > 5)
+                    if (j - begin > 5)
                     {
                         // Insert at end text from beginning to produce a circuit
-                        for(int k=j, l=0; k<16-j; k++, l++)
+                        for (int k = j, l = 0; k < 16 - j; k++, l++)
                         {
                             text[k] = scroll[i].text[l];
                         }
@@ -199,7 +235,6 @@ void LCD::scrollEnd(unsigned char line)
 {
     scroll[line].activated = false;
 }
-
 
 void LCD::scrollLeft()
 {

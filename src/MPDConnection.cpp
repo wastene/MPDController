@@ -6,6 +6,7 @@
 #include <unistd.h>
 #include <string.h>
 #include <fcntl.h>
+#include <errno.h>
 
 using namespace std;
 
@@ -17,8 +18,6 @@ MPDConnection::MPDConnection(const char* hostname, unsigned int port)
 {
     strncpy(this->hostname, hostname, 64);
     this->port = port;
-
-    MPDConnection::connect();
 }
 
 int MPDConnection::connect()
@@ -38,6 +37,7 @@ int MPDConnection::connect()
     if(::connect(socketFD, (struct sockaddr* )&addr, sizeof(addr)) < 0)
     {
         cerr << "Connect to " << hostname << ":" << port << " failed." << endl;
+        printf("ErrNr: %i - Msg: %s\n", errno, strerror(errno));
         return -1;
     }
 
@@ -46,6 +46,9 @@ int MPDConnection::connect()
         cerr << "Failed to put Socket in Non-Blocking Mode" << endl;
         return -1;
     }
+    int val = 1;
+    setsockopt(socketFD, SOL_SOCKET, SO_KEEPALIVE, &val, sizeof val);
+
     return 0;
 }
 
@@ -57,7 +60,13 @@ int MPDConnection::disconnect()
 
 int MPDConnection::send(string message)
 {
-    return ::send(socketFD, message.c_str(), strlen(message.c_str()), 0);
+    cout << "Send Message: " << message << endl;
+    ssize_t returnValue = ::send(socketFD, message.c_str(), strlen(message.c_str()), 0);
+    if(returnValue < 0){
+        printf("Failed to send a Message (%i): %s\n", errno, strerror(errno));
+        printf("Try to reconnect.");
+    }
+    return returnValue;
 }
 
 string MPDConnection::receive(int size)
@@ -65,8 +74,11 @@ string MPDConnection::receive(int size)
     char buffer[size];
     int length = 0;
     if((length = ::recv(socketFD, &buffer, sizeof(buffer), 0)) < 0)
-    {
+    {   
         //cerr << "Failed to receive a Message." << endl;
+        if(errno != 11){
+            printf("Failed to receive a Message (%i): %s\n", errno, strerror(errno));
+        }
         return string("",0);
     }
     return string(buffer,length);

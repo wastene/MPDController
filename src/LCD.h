@@ -3,6 +3,8 @@
 
 #include "I2C.h"
 
+using namespace std;
+
 // Ports
 #define CHR 1
 #define CMD 0
@@ -47,31 +49,31 @@ public:
     LCD(unsigned int addr);
     LCD(unsigned int addr, unsigned int baudrate);
 
-    void reinit();
+    int reinit();
 
     // Turn LCD Display on
-    void on();
+    int on();
 
     // Turn LCD Display off
-    void off();
+    int off();
 
     // Clears complete LCD Display
-    void clear();
+    int clear();
 
     // Clears only specific line of LCD Display
-    void clear(unsigned char line);
+    int clear(unsigned char line);
 
     // Write to LCD Display to line (beginning at 0) beginning at position (beginning at 0)
     // text need to be zero terminated
-    void write(unsigned char position, const char* text, unsigned char line);
+    int write(unsigned char position, const char* text, unsigned char line);
 
     // Write Text to LCD Display beginning at Position 0 and fills Rest with blank spaces
     // text need to be zero terminated
-    void writeLine(const char* text, unsigned char line);
+    int writeLine(const char* text, unsigned char line);
 
     // Write Text to Central of LCD Display to specific line
     // text need to be zero terminated
-    void centralWrite(const char* text, unsigned char length, unsigned char line);
+    int centralWrite(const char* text, unsigned char length, unsigned char line);
 
     // Scroll Text in specific line to left
     // text need to be zero terminated
@@ -89,9 +91,9 @@ public:
     void scrollRight();
 
 private:
-    void init();
-    void write(unsigned char, int);
-    void write4Bits(unsigned char);
+    int init();
+    int write(unsigned char, int);
+    int write4Bits(unsigned char);
 };
 
 #endif

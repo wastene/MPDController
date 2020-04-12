@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <cerrno>
 #include <string.h>
+#include <errno.h>
 
 using namespace std;
 
@@ -61,21 +62,27 @@ int I2C::close()
     return 0;
 }
 
-int I2C::write(unsigned char data)
+int I2C::write(unsigned char data) throw(int)
 {
     if(::write(dev, &data, 1) != 1){
-        cerr << "Error while writing to I2CDevice" << endl;
+        //cerr << "Error while writing to I2CDevice" << endl;
+        //throw string("Error while writing to I2CDevice");
+        printf("Error while writing to I2CDevice. Errno: %i\n", errno);
+        printf("Error Message: %s\n", strerror(errno));
         return -1;
+        //return -1;
     }
     return data;
 }
 
-int I2C::read()
+int I2C::read() throw(int)
 {
     char data = '\0';
     if(::read(dev, &data, 1) != 1){
-        cerr << "Cannot read from I2CDevice" << endl;
+        //cerr << "Cannot read from I2CDevice" << endl;
         return -1;
+        //throw string("Error while reading from I2CDevice");
+        //return -1;
     }
     return data;
 }

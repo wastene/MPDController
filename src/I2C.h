@@ -15,8 +15,8 @@ public:
     int setSlaveAddress(unsigned int addr);
     int close();
 
-    int write(unsigned char data);
-    int read();
+    int write(unsigned char data) throw(int);
+    int read() throw(int);
 };
 
 #endif

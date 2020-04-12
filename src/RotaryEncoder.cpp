@@ -39,8 +39,8 @@ int RotaryEncoder::check()
     }*/
 
     int returnValue = 0;
-    int clkState = clk->getEventUp(); // UP=1 DOWN=2
-    int dtState = dt->getEventUp();
+    int clkState = clk->getEventDown(); // UP=1 DOWN=2
+    int dtState = dt->getEventDown();
 
     clkState -= clkSignalModifier;
     if(clkState == 1 && dtState == 0 && firstSignal == 0)
